@@ -1,8 +1,10 @@
-﻿using System;
+﻿using Common;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.Serialization.Formatters.Binary;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
@@ -23,8 +25,9 @@ namespace chat_client
     /// </summary>
     public partial class MainWindow : Window
     {
-        UdpClient client = new();
-        private bool isListening = false;
+        TcpClient? client = null;
+        public bool IsConnected => client != null && client.Connected;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -32,39 +35,75 @@ namespace chat_client
 
         private async void Listen()
         {
-            while (isListening)
+            while (IsConnected)
             {
-                var result = await client.ReceiveAsync();
-                string message = Encoding.UTF8.GetString(result.Buffer);
-                msgList.Items.Add(message);
+                try
+                {
+                    var stream = client.GetStream();
+
+                    var formatter = new BinaryFormatter();
+                    var request = (ClientCommand)formatter.Deserialize(stream);
+
+                    // invoke method in main thread
+                    System.Windows.Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        msgList.Items.Add(request.Text);
+                    });
+                }
+                catch { }
             }
         }
 
         private void SendBtnClick(object sender, RoutedEventArgs e)
         {
+            if (!IsConnected)
+            {
+                MessageBox.Show("You must connect to the chat before!");
+                return;
+            }
             string text = msgTxtBox.Text;
-            SendMessage(text);
+            SendMessage(new ClientCommand(text));
         }
-
         private void JoinBtnClick(object sender, RoutedEventArgs e)
         {
-            SendMessage("<join>");
-            isListening = true;
-            Listen();
-        }
+            if (IsConnected)
+            {
+                MessageBox.Show("You are already connected to the chat!");
+                return;
+            }
 
+            client = new();
+            IPEndPoint serverIp = new(IPAddress.Parse(ipTxtBox.Text), int.Parse(portTxtBox.Text));
+            client.Connect(serverIp);
+
+            SendMessage(new ClientCommand(CommandType.Join));
+
+            Task.Run(() => Listen());
+        }
         private void LeaveBtnClick(object sender, RoutedEventArgs e)
         {
-            SendMessage("<leave>");
-            isListening = false;
+            if (!IsConnected)
+            {
+                MessageBox.Show("You must connect to the chat before!");
+                return;
+            }
+            SendMessage(new ClientCommand(CommandType.Leave));
+
+            client.Close();
+            client = null;
         }
 
-        private void SendMessage(string text)
+        private void SendMessage(ClientCommand command)
         {
-            IPEndPoint serverIp = new(IPAddress.Parse(ipTxtBox.Text), int.Parse(portTxtBox.Text));
+            NetworkStream ns = client.GetStream();
 
-            byte[] data = Encoding.UTF8.GetBytes(text);
-            client.Send(data, serverIp);
+            // ns.Write() - send data to reciever
+            // ns.Read()  - receive data from sender
+
+            var formatter = new BinaryFormatter();
+            formatter.Serialize(ns, command);   // send data to buffer
+
+            ns.Flush();                         // clear buffer and send all data
         }
     }
 }
